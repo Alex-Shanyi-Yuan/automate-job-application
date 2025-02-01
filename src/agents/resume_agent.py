@@ -10,7 +10,7 @@ from langchain.pydantic_v1 import BaseModel, Field
 import json
 import os
 import subprocess
-from ..llm.nim_client import NIMClient
+from ..llm.base import BaseLLMClient
 
 
 class ResumeContent(BaseModel):
@@ -28,9 +28,9 @@ class ResumeContent(BaseModel):
 
 
 class ResumeAgent:
-    def __init__(self, nim_api_key: str):
-        """Initialize resume agent with NIM API key."""
-        self.nim_client = NIMClient(nim_api_key)
+    def __init__(self, llm_client: BaseLLMClient):
+        """Initialize resume agent with LLM client."""
+        self.llm_client = llm_client
         self.setup_agent()
 
     def setup_agent(self):
@@ -76,7 +76,7 @@ class ResumeAgent:
         # Initialize agent
         self.agent = initialize_agent(
             tools=self.tools,
-            llm=self.nim_client,
+            llm=self.llm_client,
             agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
             verbose=True
         )
@@ -89,8 +89,8 @@ class ResumeAgent:
     ) -> Dict:
         """Generate optimized resume content."""
         try:
-            # Use NIM client to generate content
-            resume_data = self.nim_client.generate_resume_content(
+            # Use LLM client to generate content
+            resume_data = self.llm_client.generate_resume_content(
                 job_data,
                 relevant_experience,
                 template
@@ -129,7 +129,7 @@ Follow these rules:
 5. Use appropriate LaTeX commands for formatting"""
 
         try:
-            response = self.nim_client.generate(
+            response = self.llm_client.generate(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 temperature=0.3
@@ -192,7 +192,7 @@ print(result)
         """Generate cover letter and company interest statement."""
         try:
             # Generate cover letter
-            cover_letter = self.nim_client.generate_cover_letter(
+            cover_letter = self.llm_client.generate_cover_letter(
                 job_data,
                 resume_data['experience'][:2]  # Use top 2 experiences
             )
@@ -215,7 +215,7 @@ The statement should:
 3. Demonstrate cultural fit
 4. Be specific to this company/role"""
 
-            interest_response = self.nim_client.generate(
+            interest_response = self.llm_client.generate(
                 prompt=interest_prompt,
                 temperature=0.7
             )
@@ -296,7 +296,7 @@ Provide analysis in JSON format:
     "overall_match_score": "Percentage match estimate"
 }}"""
 
-            response = self.nim_client.generate(
+            response = self.llm_client.generate(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 temperature=0.3

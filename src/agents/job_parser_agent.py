@@ -11,7 +11,7 @@ import json
 import re
 from urllib.parse import urlparse
 import time
-from ..llm.nim_client import NIMClient
+from ..llm.base import BaseLLMClient
 
 
 class JobData(BaseModel):
@@ -32,9 +32,9 @@ class JobData(BaseModel):
 
 
 class JobParserAgent:
-    def __init__(self, nim_api_key: str):
-        """Initialize job parser agent with NIM API key."""
-        self.nim_client = NIMClient(nim_api_key)
+    def __init__(self, llm_client: BaseLLMClient):
+        """Initialize job parser agent with LLM client."""
+        self.llm_client = llm_client
         self.setup_agent()
 
     def setup_agent(self):
@@ -70,7 +70,7 @@ class JobParserAgent:
         # Initialize agent
         self.agent = initialize_agent(
             tools=self.tools,
-            llm=self.nim_client,
+            llm=self.llm_client,
             agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
             verbose=True
         )
@@ -149,7 +149,7 @@ Content:
         # Generate and parse response
         try:
             _input = prompt.format_prompt(content=content)
-            response = self.nim_client.generate(prompt=_input.to_string())
+            response = self.llm_client.generate(prompt=_input.to_string())
             parsed_data = parser.parse(
                 response['choices'][0]['message']['content'])
             return JobData(**parsed_data).dict()
@@ -159,7 +159,7 @@ Content:
     def _analyze_ats_requirements(self, job_data: Dict) -> Dict:
         """Analyze job requirements for ATS optimization."""
         try:
-            return self.nim_client.analyze_ats_requirements(job_data)
+            return self.llm_client.analyze_ats_requirements(job_data)
         except Exception as e:
             raise Exception(f"Failed to analyze ATS requirements: {str(e)}")
 

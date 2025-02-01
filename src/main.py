@@ -6,29 +6,46 @@ from rag.retriever import ResumeRetriever
 from typing import Dict
 import json
 from dotenv import load_dotenv
+from llm.factory import LLMFactory
 
 
 def load_config() -> Dict:
     """Load configuration from environment variables."""
     load_dotenv()
 
-    nim_api_key = os.getenv('NIM_API_KEY')
-    if not nim_api_key:
+    config = {
+        'llm_provider': os.getenv('LLM_PROVIDER', 'nvidia').lower(),
+        'llm_model': os.getenv('LLM_MODEL', ''),
+        'nvidia_api_key': os.getenv('NVIDIA_API_KEY', '')
+    }
+
+    # Validate configuration
+    if config['llm_provider'] == 'nvidia' and not config['nvidia_api_key']:
         raise ValueError(
-            "NIM_API_KEY environment variable not set. Please set it with your Nvidia NIM API key."
+            "NVIDIA_API_KEY environment variable not set. Please set it with your Nvidia API key."
         )
 
-    return {
-        'nim_api_key': nim_api_key
-    }
+    # Use default model if not specified
+    if not config['llm_model']:
+        config['llm_model'] = LLMFactory.get_default_model(
+            config['llm_provider'])
+
+    return config
 
 
 def process_job_application(job_url: str, master_resume_path: str, config: Dict) -> Dict[str, str]:
     """Process a job application by generating tailored resume and supporting documents."""
     try:
+        # Create LLM client
+        llm = LLMFactory.create_llm(
+            provider=config['llm_provider'],
+            api_key=config.get('nvidia_api_key'),
+            model_name=config['llm_model']
+        )
+
         # Initialize agents
-        job_parser = JobParserAgent(config['nim_api_key'])
-        resume_agent = ResumeAgent(config['nim_api_key'])
+        job_parser = JobParserAgent(llm)
+        resume_agent = ResumeAgent(llm)
 
         # Parse job posting
         print("\nParsing job posting...")
