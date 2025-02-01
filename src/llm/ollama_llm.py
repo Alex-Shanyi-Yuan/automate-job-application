@@ -1,185 +1,385 @@
-from typing import Dict, List, Optional
 import json
-from langchain_community.llms import Ollama
-from .base import BaseLLMClient
+from typing import Dict, Any, Optional, List
+import requests
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain.llms import Ollama
+
+from src.llm.base import BaseLLM
 
 
-class OllamaLLMClient(BaseLLMClient):
-    """Ollama implementation of LLM client."""
+class OllamaLLM(BaseLLM):
+    """Ollama LLM client implementation."""
 
-    def __init__(self, model_name: str = "deepseek-coder:latest"):
-        """Initialize Ollama client.
+    def __init__(self, model_name: str = "deepseek", base_url: str = "http://localhost:11434"):
+        """Initialize Ollama LLM client.
 
         Args:
-            model_name: Name of the model to use
+            model_name: Name of the Ollama model to use
+            base_url: Base URL for Ollama API
         """
-        self.llm = Ollama(model=model_name)
+        self.model_name = model_name
+        self.base_url = base_url
+        self.llm = Ollama(base_url=base_url, model=model_name)
 
-    def generate(
-        self,
-        prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: int = 2048,
-        stop: Optional[List[str]] = None
-    ) -> Dict:
-        """Generate text using Ollama."""
-        # Combine system prompt and user prompt if provided
-        full_prompt = ""
-        if system_prompt:
-            full_prompt = f"System: {system_prompt}\n\n"
-        full_prompt += f"User: {prompt}"
+    def generate(self, prompt: str) -> Dict[str, Any]:
+        """Generate text completion from prompt.
 
-        response = self.llm.invoke(
-            full_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop or []
-        )
+        Args:
+            prompt: Input prompt text
 
-        return {
-            "choices": [{
-                "message": {
-                    "content": response
+        Returns:
+            Response dictionary containing generated text
+        """
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": prompt,
+                    "stream": False
                 }
-            }]
-        }
+            )
+            response.raise_for_status()
+            return {
+                "choices": [{
+                    "message": {
+                        "content": response.json()["response"]
+                    }
+                }]
+            }
+        except Exception as e:
+            raise Exception(f"Failed to generate text: {str(e)}")
 
-    def parse_job_posting(self, html_content: str) -> Dict:
-        """Parse job posting HTML using Ollama."""
-        system_prompt = """You are an expert job posting analyzer. Your task is to extract key information from job postings and structure it in a way that's optimal for resume tailoring and ATS optimization. Focus on:
-1. Core job requirements
-2. Technical skills needed
-3. Soft skills and qualifications
-4. Company culture indicators
-5. Keywords for ATS optimization"""
+    def get_chain(self, prompt_template: PromptTemplate) -> LLMChain:
+        """Get LangChain chain for the LLM.
 
-        prompt = f"""Analyze the following job posting HTML and extract relevant information. Format the output as a JSON object with the following structure:
-{{
-    "title": "Job title",
-    "company": "Company name",
-    "location": "Job location",
-    "description": "Brief job description",
-    "requirements": ["List of core requirements"],
-    "technical_skills": ["List of technical skills"],
-    "soft_skills": ["List of soft skills"],
-    "experience_level": "Required years/level of experience",
-    "education": "Required education level",
-    "ats_keywords": ["Important keywords for ATS"],
-    "company_values": ["Company culture indicators"],
-    "responsibilities": ["Key job responsibilities"]
-}}
+        Args:
+            prompt_template: Template for chain prompts
 
-HTML Content:
-{html_content}"""
+        Returns:
+            Configured LLMChain
+        """
+        return LLMChain(llm=self.llm, prompt=prompt_template)
 
-        response = self.generate(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            temperature=0.3
-        )
+    def generate_resume_content(self, prompt: str) -> Dict[str, Any]:
+        """Generate optimized resume content.
 
-        return json.loads(response['choices'][0]['message']['content'])
+        Args:
+            prompt: Input prompt with job requirements and experience
 
-    def generate_resume_content(
-        self,
-        job_data: Dict,
-        relevant_experience: List[Dict],
-        template: str
-    ) -> Dict:
-        """Generate optimized resume content using Ollama."""
-        system_prompt = """You are an expert resume writer specializing in ATS optimization. Your task is to create highly targeted resume content that:
-1. Matches job requirements precisely
-2. Uses relevant keywords effectively
-3. Quantifies achievements
-4. Maintains professional formatting
-5. Optimizes for both human readers and ATS systems"""
+        Returns:
+            Dictionary containing generated resume sections
+        """
+        system_prompt = """You are an expert resume writer. Generate optimized resume 
+        content that will score well with ATS systems. Focus on:
+        1. Using relevant keywords naturally
+        2. Quantifying achievements
+        3. Highlighting transferable skills
+        4. Clear, professional language
+        
+        Format the response as a JSON object with sections for summary, experience, 
+        skills, education, and projects. Include an estimated ATS score and 
+        optimization notes."""
 
-        prompt = f"""Create optimized resume content based on the following information:
-
-Job Details:
-{json.dumps(job_data, indent=2)}
-
-Relevant Experience:
-{json.dumps(relevant_experience, indent=2)}
-
-Master Resume Template:
-{template}
-
-Generate a JSON response with:
-{{
-    "sections": {{
-        "summary": "Professional summary",
-        "experience": ["List of formatted experience entries"],
-        "skills": ["Optimized skills list"],
-        "education": ["Education entries"],
-        "projects": ["Relevant project entries"]
-    }},
-    "ats_score_estimate": "Estimated ATS match percentage",
-    "optimization_notes": ["Notes about content optimization"]
-}}"""
-
-        response = self.generate(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            temperature=0.5
-        )
-
-        return json.loads(response['choices'][0]['message']['content'])
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": f"{system_prompt}\n\n{prompt}",
+                    "stream": False
+                }
+            )
+            response.raise_for_status()
+            return json.loads(response.json()["response"])
+        except Exception as e:
+            raise Exception(f"Failed to generate resume content: {str(e)}")
 
     def generate_cover_letter(
         self,
-        job_data: Dict,
-        experience_highlights: List[str]
+        job_data: Dict[str, Any],
+        resume_data: Dict[str, Any]
     ) -> str:
-        """Generate a cover letter using Ollama."""
-        system_prompt = """You are an expert cover letter writer. Create compelling, personalized cover letters that:
-1. Connect candidate experiences with job requirements
-2. Show genuine interest in the company
-3. Maintain professional tone
-4. Include relevant keywords
-5. Keep content concise and impactful"""
+        """Generate a cover letter.
 
-        prompt = f"""Write a cover letter based on:
+        Args:
+            job_data: Parsed job posting data
+            resume_data: Generated resume content
 
-Job Details:
-{json.dumps(job_data, indent=2)}
+        Returns:
+            Generated cover letter text
+        """
+        prompt = f"""Write a compelling cover letter for the following job position. 
+        Highlight relevant experience and align with company values.
+        
+        Job Details:
+        {json.dumps(job_data, indent=2)}
+        
+        Resume Content:
+        {json.dumps(resume_data, indent=2)}
+        
+        Guidelines:
+        1. Professional and engaging tone
+        2. Specific examples of relevant achievements
+        3. Clear connection to company values and needs
+        4. Standard business letter format"""
 
-Experience Highlights:
-{json.dumps(experience_highlights, indent=2)}
+        try:
+            response = self.generate(prompt)
+            return response["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise Exception(f"Failed to generate cover letter: {str(e)}")
 
-The cover letter should be professional, engaging, and demonstrate clear alignment between the candidate's experience and the job requirements."""
+    def analyze_job_requirements(
+        self,
+        job_description: str,
+        resume_content: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Analyze job requirements and optional resume match.
 
-        response = self.generate(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            temperature=0.7
-        )
+        Args:
+            job_description: Job posting text
+            resume_content: Optional resume content to analyze against
 
-        return response['choices'][0]['message']['content']
+        Returns:
+            Dictionary containing requirement analysis
+        """
+        prompt = f"""Analyze the following job description and extract key requirements. 
+        If resume content is provided, evaluate the match.
+        
+        Job Description:
+        {job_description}
+        
+        {f'Resume Content: {resume_content}' if resume_content else ''}
+        
+        Analyze:
+        1. Required technical skills
+        2. Required soft skills
+        3. Experience level
+        4. Education requirements
+        5. Key responsibilities
+        {f'6. Resume match strength' if resume_content else ''}"""
 
-    def analyze_ats_requirements(self, job_data: Dict) -> Dict:
-        """Analyze job requirements for ATS optimization using Ollama."""
-        system_prompt = """You are an ATS optimization expert. Analyze the job data and provide specific recommendations for resume optimization."""
+        try:
+            response = self.generate(prompt)
+            return json.loads(response["choices"][0]["message"]["content"])
+        except Exception as e:
+            raise Exception(f"Failed to analyze job requirements: {str(e)}")
 
-        prompt = f"""Based on the following job data, provide ATS optimization recommendations:
+    def extract_relevant_experience(
+        self,
+        experience: List[Dict[str, str]],
+        job_requirements: Dict[str, Any]
+    ) -> List[Dict[str, str]]:
+        """Extract experience entries relevant to job requirements.
 
-Job Details:
-{json.dumps(job_data, indent=2)}
+        Args:
+            experience: List of experience entries
+            job_requirements: Parsed job requirements
 
-Provide recommendations in JSON format:
-{{
-    "critical_keywords": ["Must-have keywords for ATS"],
-    "recommended_skills": ["Skills to emphasize"],
-    "formatting_tips": ["Specific formatting recommendations"],
-    "content_suggestions": ["Content optimization suggestions"],
-    "ats_score_factors": ["Factors that will influence ATS scoring"]
-}}"""
+        Returns:
+            List of relevant experience entries
+        """
+        prompt = f"""Given the following experience entries and job requirements, 
+        identify and rank the most relevant experiences.
+        
+        Experience:
+        {json.dumps(experience, indent=2)}
+        
+        Job Requirements:
+        {json.dumps(job_requirements, indent=2)}
+        
+        For each experience entry, evaluate:
+        1. Direct skill matches
+        2. Transferable skills
+        3. Achievement relevance
+        4. Industry alignment"""
 
-        response = self.generate(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            temperature=0.3
-        )
+        try:
+            response = self.generate(prompt)
+            return json.loads(response["choices"][0]["message"]["content"])
+        except Exception as e:
+            raise Exception(f"Failed to extract relevant experience: {str(e)}")
 
-        return json.loads(response['choices'][0]['message']['content'])
+    def optimize_content(
+        self,
+        content: str,
+        keywords: List[str],
+        context: Optional[str] = None
+    ) -> str:
+        """Optimize content for given keywords.
+
+        Args:
+            content: Text content to optimize
+            keywords: Target keywords
+            context: Optional context for optimization
+
+        Returns:
+            Optimized content
+        """
+        prompt = f"""Optimize the following content to naturally incorporate target 
+        keywords while maintaining professional tone and clarity.
+        
+        Content:
+        {content}
+        
+        Target Keywords:
+        {json.dumps(keywords, indent=2)}
+        
+        {f'Context: {context}' if context else ''}
+        
+        Guidelines:
+        1. Natural keyword integration
+        2. Maintain original meaning
+        3. Professional language
+        4. Clear and concise"""
+
+        try:
+            response = self.generate(prompt)
+            return response["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise Exception(f"Failed to optimize content: {str(e)}")
+
+    def format_latex(
+        self,
+        content: Dict[str, Any],
+        template: str
+    ) -> str:
+        """Format content as LaTeX document.
+
+        Args:
+            content: Content to format
+            template: LaTeX template
+
+        Returns:
+            Formatted LaTeX document
+        """
+        prompt = f"""Format the following content into a LaTeX document using the 
+        provided template. Ensure proper escaping of special characters.
+        
+        Content:
+        {json.dumps(content, indent=2)}
+        
+        Template:
+        {template}
+        
+        Guidelines:
+        1. Proper LaTeX syntax
+        2. Clean formatting
+        3. Professional layout
+        4. Consistent styling"""
+
+        try:
+            response = self.generate(prompt)
+            return response["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise Exception(f"Failed to format LaTeX: {str(e)}")
+
+    def evaluate_ats_score(
+        self,
+        resume_text: str,
+        job_description: str
+    ) -> Dict[str, Any]:
+        """Evaluate resume ATS score for job.
+
+        Args:
+            resume_text: Resume content
+            job_description: Job posting text
+
+        Returns:
+            Dictionary with ATS evaluation results
+        """
+        prompt = f"""Evaluate how well the resume matches the job requirements and 
+        estimate ATS score. Consider keyword matches, formatting, and content relevance.
+        
+        Resume:
+        {resume_text}
+        
+        Job Description:
+        {job_description}
+        
+        Analyze:
+        1. Keyword match rate
+        2. Required skills coverage
+        3. Experience alignment
+        4. Education match
+        5. Overall ATS score
+        6. Improvement suggestions"""
+
+        try:
+            response = self.generate(prompt)
+            return json.loads(response["choices"][0]["message"]["content"])
+        except Exception as e:
+            raise Exception(f"Failed to evaluate ATS score: {str(e)}")
+
+    def suggest_improvements(
+        self,
+        current_content: str,
+        target_score: float,
+        context: Optional[str] = None
+    ) -> List[str]:
+        """Suggest content improvements.
+
+        Args:
+            current_content: Current content
+            target_score: Target ATS score
+            context: Optional context for suggestions
+
+        Returns:
+            List of improvement suggestions
+        """
+        prompt = f"""Review the current content and suggest improvements to reach 
+        the target ATS score. Focus on keyword optimization and content strength.
+        
+        Current Content:
+        {current_content}
+        
+        Target Score: {target_score}
+        
+        {f'Context: {context}' if context else ''}
+        
+        Provide specific suggestions for:
+        1. Keyword integration
+        2. Content enhancement
+        3. Format optimization
+        4. Achievement highlighting"""
+
+        try:
+            response = self.generate(prompt)
+            return json.loads(response["choices"][0]["message"]["content"])
+        except Exception as e:
+            raise Exception(f"Failed to suggest improvements: {str(e)}")
+
+    def generate_company_research(
+        self,
+        company_name: str,
+        job_title: str
+    ) -> Dict[str, Any]:
+        """Research company for application materials.
+
+        Args:
+            company_name: Target company name
+            job_title: Applied position title
+
+        Returns:
+            Dictionary with company research results
+        """
+        prompt = f"""Research and provide key information about the company and role 
+        that can be used to personalize application materials.
+        
+        Company: {company_name}
+        Position: {job_title}
+        
+        Gather:
+        1. Company values and culture
+        2. Recent news or developments
+        3. Industry position
+        4. Role significance
+        5. Growth opportunities"""
+
+        try:
+            response = self.generate(prompt)
+            return json.loads(response["choices"][0]["message"]["content"])
+        except Exception as e:
+            raise Exception(f"Failed to generate company research: {str(e)}")

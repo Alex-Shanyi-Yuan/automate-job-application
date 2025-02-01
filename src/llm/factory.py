@@ -1,7 +1,8 @@
-from typing import Dict, Optional
-from .base import BaseLLMClient
-from .nvidia_llm import NvidiaLLMClient
-from .ollama_llm import OllamaLLMClient
+import os
+from typing import Optional, Dict, Any
+
+from src.llm.base import BaseLLM
+from src.llm.ollama_llm import OllamaLLM
 
 
 class LLMFactory:
@@ -9,81 +10,83 @@ class LLMFactory:
 
     @staticmethod
     def create_llm(
-        provider: str,
-        api_key: Optional[str] = None,
-        model_name: Optional[str] = None,
-        **kwargs
-    ) -> BaseLLMClient:
-        """Create an LLM client instance.
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
+    ) -> BaseLLM:
+        """Create an LLM client based on configuration.
 
         Args:
-            provider: LLM provider name ('nvidia' or 'ollama')
-            api_key: API key for providers that require authentication
-            model_name: Name of the model to use
-            **kwargs: Additional provider-specific arguments
+            provider: LLM provider name (e.g., 'ollama', 'nvidia')
+            model: Model name to use
+            config: Additional configuration options
 
         Returns:
-            An instance of BaseLLMClient
+            Configured LLM client
 
         Raises:
-            ValueError: If the provider is not supported or required args are missing
+            ValueError: If provider is not supported or configuration is invalid
         """
-        provider = provider.lower()
+        # Use environment variables if not provided
+        provider = provider or os.getenv("LLM_PROVIDER", "ollama")
+        model = model or os.getenv("LLM_MODEL", "deepseek")
+        config = config or {}
 
-        if provider == "nvidia":
-            if not api_key:
-                raise ValueError("API key is required for NVIDIA AI provider")
-
-            return NvidiaLLMClient(
-                api_key=api_key,
-                model_name=model_name or "deepseek-ai/deepseek-r1"
+        if provider.lower() == "ollama":
+            base_url = config.get("base_url") or os.getenv(
+                "OLLAMA_BASE_URL", "http://localhost:11434")
+            return OllamaLLM(
+                model_name=model,
+                base_url=base_url
             )
-
-        elif provider == "ollama":
-            return OllamaLLMClient(
-                model_name=model_name or "deepseek-coder:latest"
-            )
-
         else:
-            raise ValueError(f"Unsupported LLM provider: {provider}")
+            raise ValueError(
+                f"Unsupported LLM provider: {provider}. Currently supported: ollama")
 
     @staticmethod
-    def get_default_model(provider: str) -> str:
-        """Get the default model name for a provider.
+    def validate_config(config: Dict[str, Any]) -> bool:
+        """Validate LLM configuration.
 
         Args:
-            provider: LLM provider name
+            config: Configuration dictionary to validate
 
         Returns:
-            Default model name for the provider
+            True if configuration is valid, False otherwise
         """
-        provider = provider.lower()
-
-        defaults = {
-            "nvidia": "deepseek-ai/deepseek-r1",
-            "ollama": "deepseek-coder:latest"
+        required_fields = {
+            "ollama": ["base_url"],
+            "nvidia": ["api_key", "base_url"]
         }
 
-        return defaults.get(provider, "")
+        provider = config.get("provider", "").lower()
+        if provider not in required_fields:
+            return False
+
+        return all(field in config for field in required_fields[provider])
 
     @staticmethod
-    def get_supported_providers() -> Dict[str, Dict]:
-        """Get information about supported LLM providers.
+    def get_default_config() -> Dict[str, Any]:
+        """Get default LLM configuration.
 
         Returns:
-            Dict containing provider information
+            Dictionary with default configuration values
         """
         return {
-            "nvidia": {
-                "name": "NVIDIA AI",
-                "requires_api_key": True,
-                "default_model": "deepseek-ai/deepseek-r1",
-                "description": "NVIDIA's AI endpoints for high-performance inference"
-            },
-            "ollama": {
-                "name": "Ollama",
-                "requires_api_key": False,
-                "default_model": "deepseek-r1:8b",
-                "description": "Local LLM runtime for various open models"
-            }
+            "provider": os.getenv("LLM_PROVIDER", "ollama"),
+            "model": os.getenv("LLM_MODEL", "deepseek"),
+            "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         }
+
+    @staticmethod
+    def create_from_env() -> BaseLLM:
+        """Create LLM client from environment variables.
+
+        Returns:
+            Configured LLM client based on environment variables
+        """
+        config = LLMFactory.get_default_config()
+        return LLMFactory.create_llm(
+            provider=config["provider"],
+            model=config["model"],
+            config=config
+        )

@@ -1,156 +1,195 @@
-import os
 import argparse
-from agents.job_parser_agent import JobParserAgent
-from agents.resume_agent import ResumeAgent
-from rag.retriever import ResumeRetriever
-from typing import Dict
 import json
-from dotenv import load_dotenv
-from llm.factory import LLMFactory
+import sys
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+from src.llm.factory import LLMFactory
+from src.agents.resume_agent import ResumeAgent
+from src.utils.file_utils import (
+    create_output_dir,
+    read_text_file,
+    save_json,
+    load_json
+)
 
 
-def load_config() -> Dict:
-    """Load configuration from environment variables."""
-    load_dotenv()
-
-    config = {
-        'llm_provider': os.getenv('LLM_PROVIDER', 'nvidia').lower(),
-        'llm_model': os.getenv('LLM_MODEL', ''),
-        'nvidia_api_key': os.getenv('NVIDIA_API_KEY', '')
-    }
-
-    # Validate configuration
-    if config['llm_provider'] == 'nvidia' and not config['nvidia_api_key']:
-        raise ValueError(
-            "NVIDIA_API_KEY environment variable not set. Please set it with your Nvidia API key."
-        )
-
-    # Use default model if not specified
-    if not config['llm_model']:
-        config['llm_model'] = LLMFactory.get_default_model(
-            config['llm_provider'])
-
-    return config
-
-
-def process_job_application(job_url: str, master_resume_path: str, config: Dict) -> Dict[str, str]:
-    """Process a job application by generating tailored resume and supporting documents."""
-    try:
-        # Create LLM client
-        llm = LLMFactory.create_llm(
-            provider=config['llm_provider'],
-            api_key=config.get('nvidia_api_key'),
-            model_name=config['llm_model']
-        )
-
-        # Initialize agents
-        job_parser = JobParserAgent(llm)
-        resume_agent = ResumeAgent(llm)
-
-        # Parse job posting
-        print("\nParsing job posting...")
-        job_data = job_parser.parse_job_posting(job_url)
-
-        # Initialize RAG system
-        print("\nInitializing RAG system...")
-        retriever = ResumeRetriever()
-
-        # Load master resume into RAG
-        print("Loading master resume...")
-        with open(master_resume_path, 'r') as f:
-            master_resume = f.read()
-        retriever.index_resume(master_resume)
-
-        # Get relevant experience using RAG
-        print("Retrieving relevant experience...")
-        relevant_experience = retriever.get_relevant_experience(
-            job_description=' '.join([
-                job_data['description'],
-                *job_data['requirements'],
-                *job_data['responsibilities']
-            ])
-        )
-
-        # Create output directory
-        company = job_data['company'].replace(' ', '_')
-        position = job_data['title'].replace(' ', '_')
-        job_id = job_data['job_id']
-        output_dir = os.path.join('out', f"{company}_{position}_{job_id}")
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Generate application documents
-        print("\nGenerating application documents...")
-        output_files = resume_agent.generate_application_documents(
-            job_data,
-            relevant_experience,
-            master_resume_path,
-            output_dir
-        )
-
-        # Analyze resume optimization
-        print("\nAnalyzing resume optimization...")
-        optimization_results = resume_agent.analyze_resume_optimization(
-            output_files['resume_pdf'],
-            job_data
-        )
-
-        # Save optimization results
-        optimization_path = os.path.join(
-            output_dir, 'optimization_report.json')
-        with open(optimization_path, 'w') as f:
-            json.dump(optimization_results, f, indent=2)
-
-        # Add optimization report to output files
-        output_files['optimization_report'] = optimization_path
-
-        print(f"\nJob Application Processing Complete!")
-        print(f"Output files saved to: {output_dir}")
-        print(
-            f"\nATS Match Score: {optimization_results['overall_match_score']}")
-
-        return output_files
-
-    except Exception as e:
-        print(f"Error processing job application: {str(e)}")
-        raise
-
-
-def main():
-    """Main entry point for the application."""
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Generate tailored resume and supporting documents for job applications'
-    )
-    parser.add_argument(
-        'job_url',
-        help='URL of the job posting'
-    )
-    parser.add_argument(
-        '--resume',
-        default='resume/masterResume.tex',
-        help='Path to master resume template (default: resume/masterResume.tex)'
+        description="Generate tailored resumes and application documents"
     )
 
-    args = parser.parse_args()
+    parser.add_argument(
+        "--job-url",
+        type=str,
+        help="URL of the job posting"
+    )
+
+    parser.add_argument(
+        "--job-data",
+        type=str,
+        help="Path to JSON file containing job data"
+    )
+
+    parser.add_argument(
+        "--master-resume",
+        type=str,
+        default="resume/masterResume.tex",
+        help="Path to master resume template (default: resume/masterResume.tex)"
+    )
+
+    parser.add_argument(
+        "--company",
+        type=str,
+        required=True,
+        help="Company name for output directory"
+    )
+
+    parser.add_argument(
+        "--position",
+        type=str,
+        required=True,
+        help="Position title for output directory"
+    )
+
+    parser.add_argument(
+        "--job-id",
+        type=str,
+        required=True,
+        help="Job posting ID for output directory"
+    )
+
+    parser.add_argument(
+        "--llm-provider",
+        type=str,
+        default=None,
+        help="LLM provider to use (default: from environment)"
+    )
+
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default=None,
+        help="LLM model to use (default: from environment)"
+    )
+
+    parser.add_argument(
+        "--config",
+        type=str,
+        help="Path to configuration JSON file"
+    )
+
+    return parser.parse_args()
+
+
+def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Load configuration from file or use defaults.
+
+    Args:
+        config_path: Optional path to configuration file
+
+    Returns:
+        Configuration dictionary
+    """
+    if config_path:
+        return load_json(config_path)
+    return {}
+
+
+def process_job_data(
+    job_url: Optional[str],
+    job_data_path: Optional[str]
+) -> Dict[str, Any]:
+    """Process job posting data from URL or file.
+
+    Args:
+        job_url: Optional job posting URL
+        job_data_path: Optional path to job data JSON
+
+    Returns:
+        Parsed job data dictionary
+
+    Raises:
+        ValueError: If neither job_url nor job_data_path is provided
+    """
+    if not job_url and not job_data_path:
+        raise ValueError("Must provide either job URL or job data file")
+
+    if job_data_path:
+        return load_json(job_data_path)
+
+    # TODO: Implement job parsing from URL
+    raise NotImplementedError("Job URL parsing not yet implemented")
+
+
+def main() -> None:
+    """Main entry point for resume generation."""
+    args = parse_args()
 
     try:
         # Load configuration
-        config = load_config()
+        config = load_config(args.config)
 
-        # Process job application
-        output_files = process_job_application(
-            args.job_url, args.resume, config)
+        # Create LLM client
+        llm_client = LLMFactory.create_llm(
+            provider=args.llm_provider,
+            model=args.llm_model,
+            config=config.get("llm", {})
+        )
 
-        # Print file locations
-        print("\nGenerated Files:")
-        print(f"Resume PDF: {output_files['resume_pdf']}")
-        print(f"Cover Letter: {output_files['cover_letter']}")
-        print(f"Company Interest: {output_files['company_interest']}")
-        print(f"Optimization Report: {output_files['optimization_report']}")
+        # Create resume agent
+        agent = ResumeAgent(llm_client)
+
+        # Process job data
+        job_data = process_job_data(args.job_url, args.job_data)
+
+        # Create output directory
+        output_dir = create_output_dir(
+            args.company,
+            args.position,
+            args.job_id
+        )
+
+        # Save job data
+        save_json(job_data, output_dir / "job_data.json")
+
+        # Load master resume
+        master_resume = read_text_file(args.master_resume)
+
+        # Extract relevant experience
+        relevant_experience = agent.llm_client.extract_relevant_experience(
+            experience=[],  # TODO: Load from master resume
+            job_requirements=job_data
+        )
+
+        # Generate application documents
+        result = agent.generate_application_documents(
+            job_data=job_data,
+            relevant_experience=relevant_experience,
+            master_resume_path=args.master_resume,
+            output_dir=str(output_dir)
+        )
+
+        # Analyze optimization
+        optimization = agent.analyze_resume_optimization(
+            resume_path=result["resume_pdf"],
+            job_data=job_data
+        )
+
+        # Save optimization analysis
+        save_json(optimization, output_dir / "optimization.json")
+
+        print(f"\nGenerated application documents in: {output_dir}")
+        print("\nFiles generated:")
+        for key, path in result.items():
+            print(f"- {key}: {path}")
+        print(f"\nATS Score: {optimization.get('overall_match_score', 'N/A')}")
 
     except Exception as e:
-        print(f"\nError: {str(e)}")
-        exit(1)
+        print(f"Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

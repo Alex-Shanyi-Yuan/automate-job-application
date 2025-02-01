@@ -1,307 +1,359 @@
-from typing import Dict, List, Optional
-from langchain.agents import AgentType, initialize_agent
-from langchain.tools import BaseTool, StructuredTool, Tool
-from langchain_community.document_loaders import TextLoader, PDFMinerLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
-from langchain.prompts import PromptTemplate
-from langchain.tools.python.tool import PythonREPL
-from langchain.pydantic_v1 import BaseModel, Field
-import json
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
 import os
+import json
 import subprocess
-from ..llm.base import BaseLLMClient
+from pathlib import Path
+from langchain.agents import Tool, AgentExecutor, LLMSingleActionAgent
+from langchain.prompts import PromptTemplate
+from langchain.memory import ConversationBufferMemory
+from langchain.output_parsers import PydanticOutputParser
+
+from src.llm.base import BaseLLM
+from src.utils.file_utils import ensure_dir
 
 
-class ResumeContent(BaseModel):
-    """Schema for resume content."""
-    summary: str = Field(description="Professional summary")
-    experience: List[str] = Field(
-        description="List of formatted experience entries")
-    skills: List[str] = Field(description="Optimized skills list")
-    education: List[str] = Field(description="Education entries")
-    projects: List[str] = Field(description="Relevant project entries")
-    ats_score_estimate: str = Field(
-        description="Estimated ATS match percentage")
-    optimization_notes: List[str] = Field(
-        description="Notes about content optimization")
+@dataclass
+class ResumeContent:
+    """Data model for resume content."""
+    summary: str
+    experience: List[str]
+    skills: List[str]
+    education: List[str]
+    projects: List[str]
+    ats_score_estimate: str
+    optimization_notes: List[str]
 
 
 class ResumeAgent:
-    def __init__(self, llm_client: BaseLLMClient):
-        """Initialize resume agent with LLM client."""
-        self.llm_client = llm_client
-        self.setup_agent()
+    """Agent for generating tailored resumes and supporting documents."""
 
-    def setup_agent(self):
-        """Set up LangChain agent with tools."""
-        # Create custom tools
-        self.tools = [
-            # Resume content generation tool
+    def __init__(self, llm_client: BaseLLM):
+        """Initialize the resume agent.
+
+        Args:
+            llm_client: LLM client for text generation
+        """
+        self.llm_client = llm_client
+        self.tools = self._setup_tools()
+        self.agent = self._setup_agent()
+        self.memory = ConversationBufferMemory()
+        self.output_parser = PydanticOutputParser(
+            pydantic_object=ResumeContent)
+
+    def _setup_tools(self) -> List[Tool]:
+        """Set up the tools available to the agent."""
+        return [
             Tool(
                 name="generate_resume_content",
-                description="Generate optimized resume content based on job requirements",
-                func=self._generate_resume_content
+                func=lambda x, y, z: self._generate_resume_content(x, y, z),
+                description="Generate tailored resume content based on job requirements"
             ),
-            # LaTeX generation tool
             Tool(
                 name="generate_latex",
-                description="Generate LaTeX content from resume data",
-                func=self._generate_latex_content
+                func=lambda x, y: self._generate_latex_content(x, y),
+                description="Generate LaTeX document from resume content"
             ),
-            # PDF compilation tool
             Tool(
                 name="compile_pdf",
-                description="Compile LaTeX content to PDF",
-                func=self._compile_latex
+                func=lambda x, y: self._compile_latex(x, y),
+                description="Compile LaTeX document to PDF"
             ),
-            # Supporting documents tool
             Tool(
                 name="generate_supporting_docs",
-                description="Generate cover letter and company interest statement",
-                func=self._generate_supporting_documents
+                func=lambda x, y, z: self._generate_supporting_documents(
+                    x, y, z),
+                description="Generate cover letter and company interest statement"
             )
         ]
 
-        # Add Python REPL tool for LaTeX compilation
-        python_repl = PythonREPL()
-        self.tools.append(
-            Tool(
-                name="python_repl",
-                description="Execute Python code for file operations and compilation",
-                func=python_repl.run
-            )
+    def _setup_agent(self) -> AgentExecutor:
+        """Set up the LangChain agent."""
+        prompt = PromptTemplate(
+            template="""You are a professional resume writer. Your task is to create 
+            tailored resumes and supporting documents that maximize ATS scores and 
+            highlight relevant experience.
+
+            Job Details: {job_data}
+            Relevant Experience: {experience}
+            Current Task: {task}
+
+            Think through this step-by-step:
+            1) What aspects of the experience match the job requirements?
+            2) How can we phrase achievements to use relevant keywords?
+            3) What supporting details will strengthen the application?
+
+            Available tools: {tools}
+
+            Response should be in the following format:
+            Thought: Your reasoning about what needs to be done
+            Action: The tool to use
+            Action Input: The input to the tool
+            Observation: The result of the tool
+            ... (repeat Thought/Action/Observation if needed)
+            Final Answer: The final result
+
+            Begin!
+            {agent_scratchpad}""",
+            input_variables=["job_data", "experience",
+                             "task", "tools", "agent_scratchpad"]
         )
 
-        # Initialize agent
-        self.agent = initialize_agent(
+        return AgentExecutor.from_agent_and_tools(
+            agent=LLMSingleActionAgent(
+                llm_chain=self.llm_client.get_chain(prompt),
+                output_parser=self.output_parser,
+                stop=["\nObservation:"],
+                allowed_tools=[tool.name for tool in self.tools]
+            ),
             tools=self.tools,
-            llm=self.llm_client,
-            agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+            memory=self.memory,
             verbose=True
         )
 
     def _generate_resume_content(
         self,
-        job_data: Dict,
-        relevant_experience: List[Dict],
+        job_data: Dict[str, Any],
+        relevant_experience: List[Dict[str, str]],
         template: str
-    ) -> Dict:
-        """Generate optimized resume content."""
+    ) -> Dict[str, Any]:
+        """Generate tailored resume content.
+
+        Args:
+            job_data: Parsed job posting data
+            relevant_experience: List of relevant experience entries
+            template: Resume template to use
+
+        Returns:
+            Dictionary containing generated resume sections
+        """
         try:
-            # Use LLM client to generate content
-            resume_data = self.llm_client.generate_resume_content(
-                job_data,
-                relevant_experience,
-                template
-            )
+            prompt = f"""Based on the following job requirements and experience, 
+            generate optimized resume content that will score well with ATS systems.
+            
+            Job Requirements:
+            {json.dumps(job_data, indent=2)}
+            
+            Relevant Experience:
+            {json.dumps(relevant_experience, indent=2)}
+            
+            Template Format:
+            {template}
+            
+            Generate content that:
+            1. Uses relevant keywords from the job posting
+            2. Quantifies achievements where possible
+            3. Highlights transferable skills
+            4. Maintains clear, professional language
+            """
 
-            # Parse and validate content
-            if isinstance(resume_data, str):
-                resume_data = json.loads(resume_data)
-
-            return ResumeContent(**resume_data).dict()
+            response = self.llm_client.generate_resume_content(prompt)
+            return response
 
         except Exception as e:
             raise Exception(f"Failed to generate resume content: {str(e)}")
 
-    def _generate_latex_content(self, resume_data: Dict, template: str) -> str:
-        """Generate LaTeX content from resume data."""
-        system_prompt = """You are an expert LaTeX resume writer. Generate LaTeX content that:
-1. Follows the provided template structure
-2. Incorporates the optimized content
-3. Maintains proper LaTeX formatting
-4. Ensures ATS readability"""
+    def _generate_latex_content(
+        self,
+        resume_data: Dict[str, Any],
+        template: str
+    ) -> str:
+        """Generate LaTeX document from resume content.
 
-        prompt = f"""Generate LaTeX resume content based on:
+        Args:
+            resume_data: Generated resume content
+            template: LaTeX template to use
 
-Template:
-{template}
-
-Resume Data:
-{json.dumps(resume_data, indent=2)}
-
-Follow these rules:
-1. Maintain all LaTeX commands and structure from the template
-2. Replace content while preserving formatting
-3. Ensure all special LaTeX characters are properly escaped
-4. Keep section ordering from the template
-5. Use appropriate LaTeX commands for formatting"""
-
+        Returns:
+            Complete LaTeX document as string
+        """
         try:
-            response = self.llm_client.generate(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                temperature=0.3
-            )
+            prompt = f"""Convert the following resume content into a LaTeX document 
+            using the provided template. Ensure proper formatting and escaping of 
+            special characters.
+            
+            Content:
+            {json.dumps(resume_data, indent=2)}
+            
+            Template:
+            {template}
+            """
+
+            response = self.llm_client.generate(prompt)
             return response['choices'][0]['message']['content']
+
         except Exception as e:
             raise Exception(f"Failed to generate LaTeX content: {str(e)}")
 
     def _compile_latex(self, latex_content: str, output_dir: str) -> str:
-        """Compile LaTeX content to PDF."""
-        os.makedirs(output_dir, exist_ok=True)
+        """Compile LaTeX document to PDF.
 
-        # Save LaTeX content
-        tex_path = os.path.join(output_dir, 'resume.tex')
-        with open(tex_path, 'w') as f:
-            f.write(latex_content)
+        Args:
+            latex_content: LaTeX document content
+            output_dir: Directory to save the PDF
 
+        Returns:
+            Path to generated PDF
+        """
         try:
-            # Use Python REPL tool for compilation
-            compile_code = f"""
-import subprocess
-import os
+            ensure_dir(output_dir)
+            tex_path = os.path.join(output_dir, "resume.tex")
 
-def compile_latex(tex_path, output_dir):
-    try:
-        # First compilation
-        subprocess.run(
-            ['pdflatex', '-output-directory', output_dir, tex_path],
-            check=True,
-            capture_output=True
-        )
-        
-        # Second compilation for proper formatting
-        subprocess.run(
-            ['pdflatex', '-output-directory', output_dir, tex_path],
-            check=True,
-            capture_output=True
-        )
-        
-        return os.path.join(output_dir, 'resume.pdf')
-    except subprocess.CalledProcessError as e:
-        raise Exception(f"LaTeX compilation failed: {{e.stderr.decode()}}")
+            with open(tex_path, 'w') as f:
+                f.write(latex_content)
 
-result = compile_latex('{tex_path}', '{output_dir}')
-print(result)
-"""
+            # Run pdflatex twice to resolve references
+            subprocess.run(
+                ['pdflatex', '-interaction=nonstopmode', tex_path],
+                cwd=output_dir,
+                check=True
+            )
+            subprocess.run(
+                ['pdflatex', '-interaction=nonstopmode', tex_path],
+                cwd=output_dir,
+                check=True
+            )
 
-            result = self.tools[-1].run(compile_code)  # Use Python REPL tool
-            return result.strip()
+            return os.path.join(output_dir, "resume.pdf")
 
         except Exception as e:
             raise Exception(f"Failed to compile LaTeX: {str(e)}")
 
     def _generate_supporting_documents(
         self,
-        job_data: Dict,
-        resume_data: Dict,
+        job_data: Dict[str, Any],
+        resume_data: Dict[str, Any],
         output_dir: str
     ) -> Dict[str, str]:
-        """Generate cover letter and company interest statement."""
+        """Generate cover letter and company interest statement.
+
+        Args:
+            job_data: Parsed job posting data
+            resume_data: Generated resume content
+            output_dir: Directory to save the documents
+
+        Returns:
+            Dictionary with paths to generated documents
+        """
         try:
+            ensure_dir(output_dir)
+
             # Generate cover letter
             cover_letter = self.llm_client.generate_cover_letter(
                 job_data,
-                resume_data['experience'][:2]  # Use top 2 experiences
+                resume_data
             )
-
-            # Save cover letter
-            cover_letter_path = os.path.join(output_dir, 'cover_letter.txt')
+            cover_letter_path = os.path.join(output_dir, "cover_letter.txt")
             with open(cover_letter_path, 'w') as f:
                 f.write(cover_letter)
 
             # Generate company interest statement
-            interest_prompt = f"""Generate a concise paragraph expressing interest in {job_data['company']}.
-Use these details:
-- Position: {job_data['title']}
-- Company values: {job_data['context']['company_values']}
-- Job description: {job_data['description']}
+            prompt = f"""Based on the job posting and company information, generate 
+            a compelling statement explaining your interest in working for this company.
+            
+            Job Details:
+            {json.dumps(job_data, indent=2)}
+            """
 
-The statement should:
-1. Show genuine interest in the company
-2. Connect your experience to their needs
-3. Demonstrate cultural fit
-4. Be specific to this company/role"""
-
-            interest_response = self.llm_client.generate(
-                prompt=interest_prompt,
-                temperature=0.7
-            )
-
-            interest_statement = interest_response['choices'][0]['message']['content']
-
-            # Save interest statement
-            interest_path = os.path.join(output_dir, 'company_interest.txt')
+            response = self.llm_client.generate(prompt)
+            interest_statement = response['choices'][0]['message']['content']
+            interest_path = os.path.join(output_dir, "company_interest.txt")
             with open(interest_path, 'w') as f:
                 f.write(interest_statement)
 
             return {
-                'cover_letter': cover_letter_path,
-                'company_interest': interest_path
+                "cover_letter": cover_letter_path,
+                "company_interest": interest_path
             }
 
         except Exception as e:
             raise Exception(
-                f"Failed to generate supporting documents: {str(e)}")
+                f"Failed to generate supporting documents: {str(e)}"
+            )
 
     def generate_application_documents(
         self,
-        job_data: Dict,
-        relevant_experience: List[Dict],
+        job_data: Dict[str, Any],
+        relevant_experience: List[Dict[str, str]],
         master_resume_path: str,
         output_dir: str
     ) -> Dict[str, str]:
-        """Generate all application documents using LangChain agent."""
+        """Generate all application documents.
+
+        Args:
+            job_data: Parsed job posting data
+            relevant_experience: List of relevant experience entries
+            master_resume_path: Path to master resume template
+            output_dir: Directory to save generated documents
+
+        Returns:
+            Dictionary with paths to all generated documents
+        """
         try:
             # Read master resume template
-            with open(master_resume_path, 'r') as f:
+            with open(master_resume_path) as f:
                 template = f.read()
 
-            # Execute agent to generate documents
-            result = self.agent.run({
-                "input": "Generate application documents",
-                "job_data": job_data,
-                "relevant_experience": relevant_experience,
-                "template": template,
-                "output_dir": output_dir
-            })
+            # Generate resume content
+            resume_data = self._generate_resume_content(
+                job_data,
+                relevant_experience,
+                template
+            )
 
-            # Parse agent result
-            if isinstance(result, str):
-                result = json.loads(result)
+            # Generate LaTeX
+            latex_content = self._generate_latex_content(resume_data, template)
 
-            return result
+            # Compile PDF
+            pdf_path = self._compile_latex(latex_content, output_dir)
+
+            # Generate supporting documents
+            supporting_docs = self._generate_supporting_documents(
+                job_data,
+                resume_data,
+                output_dir
+            )
+
+            return {
+                "resume_pdf": pdf_path,
+                **supporting_docs
+            }
 
         except Exception as e:
             raise Exception(
                 f"Failed to generate application documents: {str(e)}")
 
-    def analyze_resume_optimization(self, resume_path: str, job_data: Dict) -> Dict:
-        """Analyze resume optimization against job requirements."""
+    def analyze_resume_optimization(
+        self,
+        resume_path: str,
+        job_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze resume optimization for ATS.
+
+        Args:
+            resume_path: Path to generated resume PDF
+            job_data: Parsed job posting data
+
+        Returns:
+            Dictionary containing optimization analysis
+        """
         try:
-            # Load PDF content
-            loader = PDFMinerLoader(resume_path)
-            documents = loader.load()
-            resume_text = documents[0].page_content
+            prompt = f"""Analyze how well the resume matches the job requirements 
+            and provide optimization suggestions.
+            
+            Resume Path: {resume_path}
+            Job Requirements:
+            {json.dumps(job_data, indent=2)}
+            
+            Provide analysis of:
+            1. Keyword matches and missing keywords
+            2. Areas of strength
+            3. Areas for improvement
+            4. ATS compatibility
+            5. Overall match score
+            """
 
-            system_prompt = """You are an expert resume reviewer. Analyze the resume against the job requirements and provide detailed feedback."""
-
-            prompt = f"""Analyze this resume against the job requirements:
-
-Resume Text:
-{resume_text}
-
-Job Requirements:
-{json.dumps(job_data, indent=2)}
-
-Provide analysis in JSON format:
-{{
-    "keyword_matches": ["Keywords found in both resume and job posting"],
-    "missing_keywords": ["Important keywords missing from resume"],
-    "strength_areas": ["Areas where resume matches well"],
-    "improvement_areas": ["Suggested improvements"],
-    "ats_compatibility": ["ATS compatibility notes"],
-    "overall_match_score": "Percentage match estimate"
-}}"""
-
-            response = self.llm_client.generate(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                temperature=0.3
-            )
-
+            response = self.llm_client.generate(prompt)
             return json.loads(response['choices'][0]['message']['content'])
 
         except Exception as e:
