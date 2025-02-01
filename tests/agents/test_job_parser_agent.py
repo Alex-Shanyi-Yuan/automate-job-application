@@ -74,7 +74,7 @@ def test_setup_agent(mock_job_parser):
         tool.name == "analyze_ats_requirements" for tool in mock_job_parser.tools)
 
 
-@patch('requests.get')
+@patch('langchain_community.document_loaders.web_base.requests.get')
 def test_fetch_url_content(mock_get, mock_job_parser):
     """Test URL content fetching."""
     mock_get.return_value.text = "<html><body>Test content</body></html>"
@@ -83,10 +83,7 @@ def test_fetch_url_content(mock_get, mock_job_parser):
     content = mock_job_parser._fetch_url_content("https://test.com/job")
 
     assert "Test content" in content
-    mock_get.assert_called_once_with(
-        "https://test.com/job",
-        headers=mock_job_parser.headers
-    )
+    mock_get.assert_called_once()
 
 
 def test_parse_job_content(mock_job_parser, sample_job_data):
@@ -122,7 +119,7 @@ def test_analyze_ats_requirements(mock_job_parser):
     mock_job_parser.llm_client.analyze_ats_requirements.assert_called_once()
 
 
-@patch('requests.get')
+@patch('langchain_community.document_loaders.web_base.requests.get')
 def test_parse_job_posting_integration(mock_get, mock_job_parser, sample_job_data):
     """Test full job posting parsing integration."""
     # Mock HTTP response

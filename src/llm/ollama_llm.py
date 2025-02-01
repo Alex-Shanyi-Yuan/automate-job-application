@@ -3,12 +3,12 @@ from typing import Dict, Any, Optional, List
 import requests
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-from langchain.llms import Ollama
+from langchain_community.llms import Ollama
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLMClient
 
 
-class OllamaLLM(BaseLLM):
+class OllamaLLMClient(BaseLLMClient):
     """Ollama LLM client implementation."""
 
     def __init__(self, model_name: str = "deepseek", base_url: str = "http://localhost:11434"):

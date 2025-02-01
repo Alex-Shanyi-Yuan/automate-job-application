@@ -1,8 +1,8 @@
 import os
 from typing import Optional, Dict, Any
 
-from src.llm.base import BaseLLM
-from src.llm.ollama_llm import OllamaLLM
+from src.llm.base import BaseLLMClient
+from src.llm.ollama_llm import OllamaLLMClient
 
 
 class LLMFactory:
@@ -13,7 +13,7 @@ class LLMFactory:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None
-    ) -> BaseLLM:
+    ) -> BaseLLMClient:
         """Create an LLM client based on configuration.
 
         Args:
@@ -35,7 +35,7 @@ class LLMFactory:
         if provider.lower() == "ollama":
             base_url = config.get("base_url") or os.getenv(
                 "OLLAMA_BASE_URL", "http://localhost:11434")
-            return OllamaLLM(
+            return OllamaLLMClient(
                 model_name=model,
                 base_url=base_url
             )
@@ -78,7 +78,7 @@ class LLMFactory:
         }
 
     @staticmethod
-    def create_from_env() -> BaseLLM:
+    def create_from_env() -> BaseLLMClient:
         """Create LLM client from environment variables.
 
         Returns:

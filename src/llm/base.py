@@ -4,7 +4,7 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
 
-class BaseLLM(ABC):
+class BaseLLMClient(ABC):
     """Base class for LLM clients."""
 
     @abstractmethod

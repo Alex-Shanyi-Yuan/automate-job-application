@@ -9,7 +9,7 @@ from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 from langchain.output_parsers import PydanticOutputParser
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLMClient
 from src.utils.file_utils import ensure_dir
 
 
@@ -28,7 +28,7 @@ class ResumeContent:
 class ResumeAgent:
     """Agent for generating tailored resumes and supporting documents."""
 
-    def __init__(self, llm_client: BaseLLM):
+    def __init__(self, llm_client: BaseLLMClient):
         """Initialize the resume agent.
 
         Args:

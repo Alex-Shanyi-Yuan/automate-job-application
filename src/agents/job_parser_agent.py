@@ -1,17 +1,35 @@
-from typing import Dict, List, Optional
-from langchain.agents import AgentType, initialize_agent
-from langchain.tools import BaseTool, StructuredTool, Tool
-from langchain.tools.browser import BrowserTools
-from langchain_community.document_loaders import UnstructuredURLLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
-from langchain.prompts import PromptTemplate
-from langchain.pydantic_v1 import BaseModel, Field
-import json
-import re
-from urllib.parse import urlparse
 import time
+import re
+import json
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
 from ..llm.base import BaseLLMClient
+from pydantic import BaseModel, Field
+from langchain_community.document_loaders import UnstructuredURLLoader
+from langchain.prompts import PromptTemplate
+from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.agents import AgentType, initialize_agent
+from langchain.tools import Tool
+from langchain_community.tools.base import BaseTool
+from langchain_community.utilities.playwright import PlaywrightBrowser
+
+
+class BrowserTools(BaseTool):
+    """Browser tools using Playwright."""
+
+    def __init__(self):
+        self.browser = PlaywrightBrowser()
+
+    def get_tools(self):
+        """Get browser tools."""
+        return [
+            Tool(
+                name="browse_web",
+                description="Browse to a specific URL",
+                func=self.browser.run
+            )
+        ]
 
 
 class JobData(BaseModel):
@@ -151,7 +169,8 @@ Content:
             _input = prompt.format_prompt(content=content)
             response = self.llm_client.generate(prompt=_input.to_string())
             parsed_data = parser.parse(
-                response['choices'][0]['message']['content'])
+                response['choices'][0]['message']['content']
+            )
             return JobData(**parsed_data).dict()
         except Exception as e:
             raise Exception(f"Failed to parse job content: {str(e)}")
