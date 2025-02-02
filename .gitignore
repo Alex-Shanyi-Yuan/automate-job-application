@@ -38,12 +38,10 @@ out/
 cache/
 logs/
 *.log
-*.pdf
 *.aux
 *.toc
 *.out
 *.tex
-!resume/templates/*.tex
 
 # Test coverage
 .coverage
